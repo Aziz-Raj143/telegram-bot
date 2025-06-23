@@ -1,85 +1,56 @@
-import pandas as pd
-from telegram import Update, Document
-from telegram.ext import (
-    ApplicationBuilder,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-import os
-from datetime import datetime
-import tempfile
-import nest_asyncio
 import asyncio
+import nest_asyncio
+import logging
+from flask import Flask
+from telegram.ext import ApplicationBuilder, MessageHandler, filters
+import pandas as pd
+from io import BytesIO
 
-nest_asyncio.apply()
+# Your bot token (replace this or use environment variable)
+import os
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7979685989:AAFGCHa-OISMWpIx5r3bnx1N8S_Gw4vRlmQ")
 
-# 🔐 Replace with your actual Telegram bot token
-BOT_TOKEN = "7979685989:AAFGCHa-OISMWpIx5r3bnx1N8S_Gw4vRlmQ"
+# Logging
+logging.basicConfig(level=logging.INFO)
 
-# 📩 Format each row into the message format you showed earlier
-def format_row(row) -> str:
-    message = f"""***** {row['Station Name']} *****
-Request ID: {row['Request ID']}
-PNR(s): {row['PNR']}
-Train details: {row['Train']}
-Bogie details: {row['Bogie']}
+# Flask app to keep web service running
+web_app = Flask(__name__)
 
-***** THAALI_DETAILS *****
-No of pax: {row['No Of Pax']}
+@web_app.route("/")
+def home():
+    return "Bot is running!", 200
 
-***** TIME_DETAILS *****
-Date: {row['Date']}
-Day: {row['Day']}
-Time: {row['Time Of Arrival']}
+# Telegram bot logic
+async def handle_file(update, context):
+    file = await update.message.document.get_file()
+    f = BytesIO()
+    await file.download_to_memory(out=f)
+    f.seek(0)
+    df = pd.read_excel(f)
 
-***** PASSENGER_DETAILS *****
-Name: {row['Name']}
-Contact Number: {row['Contact Number']}
-Whatsapp Number: {row['Whatsapp Number']}
-Comments: {row['Comments']}"""
-    return message
+    # Sort by "Time Of Arrival"
+    df = df.sort_values(by="Time Of Arrival")
 
-# 📁 Handle file upload
-async def handle_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc: Document = update.message.document
-    if not doc.file_name.endswith((".xlsx", ".xls")):
-        await update.message.reply_text("❌ Please upload a valid Excel file.")
-        return
+    for _, row in df.iterrows():
+        msg = f"🚆 Train No: {row['Train No']}\n📍 Station: {row['Station Name']}\n🕐 ETA: {row['Time Of Arrival']}"
+        await update.message.reply_text(msg)
 
-    # Download Excel to temporary location
-    file = await context.bot.get_file(doc.file_id)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_file:
-        await file.download_to_drive(tmp_file.name)
-        tmp_path = tmp_file.name
-
-    try:
-        # Read and sort data
-        df = pd.read_excel(tmp_path)
-        df = df.sort_values(by="Time Of Arrival")
-
-        # Send each row as a separate message
-        for _, row in df.iterrows():
-            msg = format_row(row)
-            await update.message.reply_text(msg)
-
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Error processing file: {e}")
-    finally:
-        os.remove(tmp_path)
-
-# 🤖 Set up Telegram bot application
 app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(MessageHandler(filters.Document.ALL, handle_excel))
+app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
-# 🚀 Async runner for Render
-async def main():
+# Run Telegram bot inside async loop
+async def run_bot():
     print("🤖 Bot is running.")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
     await app.updater.wait_until_closed()
-    await app.stop()
-    await app.shutdown()
 
-asyncio.run(main())
+# Apply nest_asyncio for compatibility
+nest_asyncio.apply()
+
+# Start both Flask and Telegram bot
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_bot())
+    web_app.run(host="0.0.0.0", port=10000)
